@@ -48,7 +48,7 @@ fi
 
 # Add ssh keys by downloading them from GitHub
 echo "Adding ssh keys from GitHub..."
-mkdir -p ~/.ssh && curl -s https://github.com/pavel.keys >> ~/.ssh/authorized_keys && echo "Successfully added ssh keys" >> $logfile || echo "Failed to add ssh keys" >> $logfile
+mkdir -p ~/.ssh && curl -s https://github.com/bhaukaalbaba.keys >> ~/.ssh/authorized_keys && echo "Successfully added ssh keys" >> $logfile || echo "Failed to add ssh keys" >> $logfile
 
 # Find out sshd_config file relevant for the distro and disable password based SSH access.
 echo "Disabling password based SSH access..."
