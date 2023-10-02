@@ -11,6 +11,7 @@
 #   -c, --configure           Configure the script. Captures the values of rawlogs_dir, processed_dir, s3_bucket, s3_bucket_name, TO, and FROM variables using ncurses dialog and stores them in /root/.logmanage.conf.
 #   -t, --test                Test if the S3 bucket is accessible and writable.
 #   -e, --email               Send a test email.
+#   -s, --sync-only           Skip the finding old files to gzip and simply skip to the aws s3 sync part and further.
 #   -h, --help                Display this help and exit.
 
 # Examples:
@@ -19,9 +20,11 @@
 #   ./logrotatev2.sh --configure
 #   ./logrotatev2.sh --test
 #   ./logrotatev2.sh --email
+#   ./logrotatev2.sh --sync-only
 
 # Note:
 #   Make sure to run this script with necessary permissions. If you're running this as a non-root user, you might need to use sudo.
+
 
 
 
@@ -34,6 +37,7 @@ display_help() {
   echo "   -c, --configure    Configure the script."
   echo "   -t, --test         Test if the S3 bucket is accessible and writable."
   echo "   -e, --email        Send a test email."
+  echo "   -s, --sync-only    Skip the finding old files to gzip and simply skip to the aws s3 sync part and further."
   echo "   -h, --help         Display this help and exit."
   echo
 }
@@ -86,6 +90,37 @@ while (( "$#" )); do
       
       echo "Test email sent. Please rerun the script without '--email'"
       exit 0
+      ;;
+    -s|--sync-only)
+       # Sync all .gz files from processed_dir to S3.
+       aws s3 sync --include "*.gz" --storage-class INTELLIGENT_TIERING --size-only "$processed_dir" "$s3_bucket" || (echo "$(date) - Sync to S3 failed: $filelist" >> "$logfile" && aws ses send-email --from "$FROM" --destination "ToAddresses=$TO" --message "Subject={Data=Log file sync to S3 failed,Charset=$CHARSET},Body={Text={Data=Sync to S3 failed for: $filelist,Charset=$CHARSET}}" )
+       
+       # Check for stale files in processed_dir.
+       for file in $(find "$processed_dir" -type f); do
+         # Get the Content-MD5 from S3.
+         s3_md5=$(aws s3api head-object --bucket "$s3_bucket_name" --key "${file#$processed_dir}" --query ContentMD5 --output text)
+
+         # Calculate the MD5 checksum of the local file.
+         local_checksum=$(md5sum "$file" | awk '{ print $1 }' | base64)
+
+         if [[ "$s3_md5" == "$local_checksum" ]] && [[ $(find "$file" -mtime +$stale_days) ]]; then
+           # The file exists in both local and S3 and is older than the specified number of days, so delete it from local storage.
+           rm "$file" && echo "$(date) - Deleted stale file: $file" >> "$logfile"
+         elif [[ "$s3_md5" != "$local_checksum" ]]; then
+           # The checksums don't match, so send an email alert.
+           echo "$(date) - Checksum mismatch, not deleting: $file" >> "$logfile"
+           aws ses send-email --from "$FROM" --destination "ToAddresses=$TO" --message "Subject={Data=Stale log file deletion failed,Charset=$CHARSET},Body={Text={Data=Checksum mismatch for: $file,Charset=$CHARSET}}" 
+         fi
+       done
+
+       # Delete empty folders in processed_dir and rawlogs_dir.
+       find "$processed_dir" "$rawlogs_dir" -type d -empty -exec rm -d {} \;
+
+       # Log the end of the script execution.
+       echo "$(date) - Script execution completed." >> "$logfile"
+       
+       echo "Sync only operation completed. Please rerun the script without '--sync-only'"
+       exit 0
       ;;
     -h|--help)
       display_help
