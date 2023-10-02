@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Script Name: logrotatev2.sh
-# Description: This script processes and manages log files. It compresses log files, moves them to a specified directory, syncs them to an S3 bucket, and deletes stale files.
+# Description: This script processes and manages log files. It compresses log files, moves them to a specified directory, syncs them to an S3 bucket, deletes stale files, and sends a test email.
 
 # Usage:
 #   ./logrotatev2.sh [option...]
@@ -10,6 +10,7 @@
 #   -i, --install-aws         Install AWS CLI.
 #   -c, --configure           Configure the script. Captures the values of rawlogs_dir, processed_dir, s3_bucket, s3_bucket_name, TO, FROM, and CHARSET variables using ncurses dialog and stores them in /root/.logmanage.conf.
 #   -t, --test                Test if the S3 bucket is accessible and writable.
+#   -e, --email               Send a test email.
 #   -h, --help                Display this help and exit.
 
 # Examples:
@@ -17,19 +18,22 @@
 #   ./logrotatev2.sh --install-aws
 #   ./logrotatev2.sh --configure
 #   ./logrotatev2.sh --test
+#   ./logrotatev2.sh --email
 
 # Note:
 #   Make sure to run this script with necessary permissions. If you're running this as a non-root user, you might need to use sudo.
+
 
 
 # Function to display help
 display_help() {
   echo "Usage: $0 [option...]" >&2
   echo
-  echo "   -d, --days         Number of days to keep stale log files. Default is 7."
+  echo "   -d, --days         Set the number of days to keep stale log files. Default is 7."
   echo "   -i, --install-aws  Install AWS CLI."
   echo "   -c, --configure    Configure the script."
   echo "   -t, --test         Test if the S3 bucket is accessible and writable."
+  echo "   -e, --email        Send a test email."
   echo "   -h, --help         Display this help and exit."
   echo
 }
@@ -76,6 +80,13 @@ while (( "$#" )); do
       echo "Bucket accessibility test completed. Please rerun the script without '--test'"
       exit 0
       ;;
+    -e|--email)
+      # Send a test email.
+      aws ses send-email --from "$FROM" --destination "ToAddresses=$TO" --message "Subject={Data=Test Email,Charset=$CHARSET},Body={Text={Data=This is a test email.,Charset=$CHARSET}}" 
+      
+      echo "Test email sent. Please rerun the script without '--email'"
+      exit 0
+      ;;
     -h|--help)
       display_help
       exit 0
@@ -96,11 +107,10 @@ fi
 # Check if /root/.logmanage.conf exists and is readable, and load variables from it.
 if [ -f /root/.logmanage.conf ] && [ -r /root/.logmanage.conf ]; then
     source /root/.logmanage.conf
-else
+else 
     echo "Configuration file missing or not readable. Please run the script with '--configure'"
     exit 1
 fi
-
 # Log the start of the script execution.
 echo "$(date) - Script started." >> "$logfile"
 
