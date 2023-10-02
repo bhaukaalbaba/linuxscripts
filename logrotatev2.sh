@@ -8,7 +8,7 @@
 # Options:
 #   -d, --days <days>         Set the number of days to keep stale log files. Default is 7.
 #   -i, --install-aws         Install AWS CLI.
-#   -c, --configure           Configure the script. Captures the values of rawlogs_dir, processed_dir, s3_bucket, s3_bucket_name, TO, FROM, and CHARSET variables using ncurses dialog and stores them in /root/.logmanage.conf.
+#   -c, --configure           Configure the script. Captures the values of rawlogs_dir, processed_dir, s3_bucket, s3_bucket_name, TO, and FROM variables using ncurses dialog and stores them in /root/.logmanage.conf.
 #   -t, --test                Test if the S3 bucket is accessible and writable.
 #   -e, --email               Send a test email.
 #   -h, --help                Display this help and exit.
@@ -41,6 +41,7 @@ display_help() {
 # Variables
 logfile="/root/logscript/action.log"
 stale_days=7
+CHARSET="UTF-8"
 
 # Parse command-line arguments
 while (( "$#" )); do
@@ -67,10 +68,9 @@ while (( "$#" )); do
       s3_bucket_name=$(dialog --inputbox "Enter s3_bucket_name:" 10 60 3>&1 1>&2 2>&3)
       TO=$(dialog --inputbox "Enter TO:" 10 60 3>&1 1>&2 2>&3)
       FROM=$(dialog --inputbox "Enter FROM:" 10 60 3>&1 1>&2 2>&3)
-      CHARSET=$(dialog --inputbox "Enter CHARSET:" 10 60 3>&1 1>&2 2>&3)
 
       # Write variables to /root/.logmanage.conf
-      printf 'rawlogs_dir="%s"\nprocessed_dir="%s"\ns3_bucket="%s"\ns3_bucket_name="%s"\nTO="%s"\nFROM="%s"\nCHARSET="%s"\n' "$rawlogs_dir" "$processed_dir" "$s3_bucket" "$s3_bucket_name" "$TO" "$FROM" "$CHARSET" > /root/.logmanage.conf
+      printf 'rawlogs_dir="%s"\nprocessed_dir="%s"\ns3_bucket="%s"\ns3_bucket_name="%s"\nTO="%s"\nFROM="%s"\n' "$rawlogs_dir" "$processed_dir" "$s3_bucket" "$s3_bucket_name" "$TO" "$FROM" > /root/.logmanage.conf
 
       echo "Configuration saved. Please rerun the script without '--configure'"
       exit 0
@@ -111,6 +111,8 @@ else
     echo "Configuration file missing or not readable. Please run the script with '--configure'"
     exit 1
 fi
+
+
 # Log the start of the script execution.
 echo "$(date) - Script started." >> "$logfile"
 
