@@ -38,7 +38,7 @@ grep -oP 'zone "\K[^"]+' "$zone_file" | while read -r zone_name; do
     ptr_content+="                3600      ; Expire\n"
     ptr_content+="                60 )      ; Minimum\n"
     ptr_content+="@                NS     rdns1.$root_domain.\n"
-    ptr_content+="@                NS     dns2.$root_domain.\n"
+    ptr_content+="@                NS     rdns2.$root_domain.\n"
 
     # Correctly format `$GENERATE` PTR entries
     ptr_target="$reversed_prefix.\$.rev.$root_domain."
