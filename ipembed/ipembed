@@ -14,7 +14,7 @@ REVERSE=false
 JSON=false
 JSON_FIRST=true
 
-FAIL_LOG="failures.log"
+FAIL_LOG="ipembed_failures.log"
 
 SUCCESS=0
 FAIL=0
