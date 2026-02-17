@@ -1,0 +1,348 @@
+#!/usr/bin/env bash
+set -o pipefail
+
+########################################
+# Globals
+########################################
+
+PREFIX=""
+MODE=""
+TARGET=""
+INPUT_FILE=""
+OUTPUT_FILE=""
+REVERSE=false
+JSON=false
+JSON_FIRST=true
+
+FAIL_LOG="failures.log"
+
+SUCCESS=0
+FAIL=0
+
+########################################
+# Help
+########################################
+
+usage() {
+cat <<EOF
+IPv4/IPv6 Conversion Tool (Strict Production Mode)
+
+Usage:
+  -4 <ipv4>             Convert IPv4 → IPv6 (requires --prefix)
+  -6 <ipv6>             Convert IPv6 → IPv4 (auto-detect)
+  -b <file|->           Batch mode (file or pipe)
+  --prefix <a:b:c:d>    Required for IPv4→IPv6 (/64 prefix, 4 hextets)
+  -r                    Include reverse DNS
+  -o <file>             Write output to file
+  --json                JSON output mode
+  -h                    Help
+
+Exit Codes:
+  0  Success
+  1  Partial failure
+  2  Invalid arguments
+  3  File error
+  4  All failed
+EOF
+exit 0
+}
+
+########################################
+# Validation
+########################################
+
+validate_ipv4() {
+awk -F. '
+NF!=4 {exit 1}
+{
+for(i=1;i<=4;i++) {
+  if($i !~ /^[0-9]+$/) exit 1
+  if($i<0 || $i>255) exit 1
+  if($i ~ /^0[0-9]+$/) exit 1
+}
+}' <<< "$1"
+}
+
+validate_prefix() {
+[[ "$1" =~ ^([0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4}$ ]]
+}
+
+########################################
+# IPv6 Normalization
+########################################
+
+expand_ipv6() {
+local ip="$1"
+
+if [[ $(grep -o "::" <<< "$ip" | wc -l) -gt 1 ]]; then
+  return 1
+fi
+
+IFS=":" read -ra PARTS <<< "$ip"
+
+if [[ "$ip" == *"::"* ]]; then
+  left="${ip%%::*}"
+  right="${ip##*::}"
+
+  IFS=":" read -ra L <<< "$left"
+  IFS=":" read -ra R <<< "$right"
+
+  missing=$((8 - ${#L[@]} - ${#R[@]}))
+  [[ $missing -lt 0 ]] && return 1
+
+  NEW=("${L[@]}")
+  for ((i=0;i<missing;i++)); do NEW+=("0"); done
+  NEW+=("${R[@]}")
+else
+  NEW=("${PARTS[@]}")
+  [[ ${#NEW[@]} -ne 8 ]] && return 1
+fi
+
+for i in "${!NEW[@]}"; do
+  [[ "${NEW[$i]}" =~ ^[0-9a-fA-F]{0,4}$ ]] || return 1
+  NEW[$i]=$(printf "%04x" "0x${NEW[$i]:-0}")
+done
+
+echo "${NEW[*]}"
+}
+
+compress_ipv6() {
+local arr=($1)
+local out=""
+local skip=0
+local best_start=-1 best_len=0
+local cur_start=-1 cur_len=0
+
+for i in {0..7}; do
+  if [[ "${arr[$i]}" == "0000" ]]; then
+    if [[ $cur_start -eq -1 ]]; then
+      cur_start=$i; cur_len=1
+    else
+      ((cur_len++))
+    fi
+  else
+    if [[ $cur_len -gt $best_len ]]; then
+      best_len=$cur_len; best_start=$cur_start
+    fi
+    cur_start=-1; cur_len=0
+  fi
+done
+
+if [[ $cur_len -gt $best_len ]]; then
+  best_len=$cur_len; best_start=$cur_start
+fi
+
+for i in {0..7}; do
+  if [[ $best_len -gt 1 && $i -ge $best_start && $i -lt $((best_start+best_len)) ]]; then
+    if [[ $skip -eq 0 ]]; then out+=":"; skip=1; fi
+    continue
+  fi
+  skip=0
+  out+=$(printf "%x" 0x${arr[$i]})
+  [[ $i -lt 7 ]] && out+=":"
+done
+
+echo "$out"
+}
+
+########################################
+# Conversion
+########################################
+
+ipv4_to_ipv6() {
+IFS=. read -r o1 o2 o3 o4 <<< "$1"
+
+h1=$(printf "%02x%02x" $o1 $o2)
+h2=$(printf "%02x%02x" $o3 $o4)
+
+expanded=$(expand_ipv6 "$PREFIX:0:0") || return 1
+IFS=" " read -ra P <<< "$expanded"
+
+P[6]=$h1
+P[7]=$h2
+
+compress_ipv6 "${P[*]}"
+}
+
+ipv6_to_ipv4() {
+local ip="$1"
+
+# IPv4 mapped
+if [[ "$ip" =~ ::ffff:([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+  echo "${BASH_REMATCH[1]}"
+  return 0
+fi
+
+expanded=$(expand_ipv6 "$ip") || return 1
+IFS=" " read -ra P <<< "$expanded"
+
+# NAT64 64:ff9b::/96
+if [[ "${P[0]}" == "0064" && "${P[1]}" == "ff9b" ]]; then
+  :
+fi
+
+h1=${P[6]}
+h2=${P[7]}
+
+o1=$((16#${h1:0:2}))
+o2=$((16#${h1:2:2}))
+o3=$((16#${h2:0:2}))
+o4=$((16#${h2:2:2}))
+
+[[ $o1 -le 255 && $o2 -le 255 && $o3 -le 255 && $o4 -le 255 ]] || return 1
+
+echo "$o1.$o2.$o3.$o4"
+}
+
+reverse_dns() {
+IFS=. read -r o1 o2 o3 o4 <<< "$1"
+echo "$o4.$o3.$o2.$o1.in-addr.arpa"
+}
+
+########################################
+# JSON Helpers
+########################################
+
+json_escape() {
+echo "$1" | sed 's/"/\\"/g'
+}
+
+json_start_batch() {
+echo '{'
+echo '  "results": ['
+}
+
+json_end_batch() {
+echo
+echo '  ],'
+echo "  \"summary\": {"
+echo "    \"success\": $SUCCESS,"
+echo "    \"failed\": $FAIL"
+echo '  }'
+echo '}'
+}
+
+json_emit() {
+local input="$1"
+local type="$2"
+local output="$3"
+local rdns="$4"
+
+[[ $JSON_FIRST == true ]] && JSON_FIRST=false || echo ','
+echo -n '    {'
+echo -n "\"input\":\"$(json_escape "$input")\","
+echo -n "\"type\":\"$type\","
+echo -n "\"output\":\"$(json_escape "$output")\""
+[[ -n "$rdns" ]] && echo -n ",\"reverse_dns\":\"$rdns\""
+echo -n '}'
+}
+
+########################################
+# Processing
+########################################
+
+process_ipv4() {
+validate_ipv4 "$1" || { echo "$1,ERROR" >> "$FAIL_LOG"; ((FAIL++)); return; }
+[[ -z "$PREFIX" ]] && { echo "Missing --prefix"; exit 2; }
+
+v6=$(ipv4_to_ipv6 "$1") || { ((FAIL++)); return; }
+((SUCCESS++))
+
+if $JSON; then
+  rdns=""
+  $REVERSE && rdns=$(reverse_dns "$1")
+  json_emit "$1" "ipv4" "$v6" "$rdns"
+else
+  if $REVERSE; then
+    echo "$1,$v6,$(reverse_dns "$1")"
+  else
+    echo "$1,$v6"
+  fi
+fi
+}
+
+process_ipv6() {
+v4=$(ipv6_to_ipv4 "$1") || { echo "$1,ERROR" >> "$FAIL_LOG"; ((FAIL++)); return; }
+((SUCCESS++))
+
+if $JSON; then
+  rdns=""
+  $REVERSE && rdns=$(reverse_dns "$v4")
+  json_emit "$1" "ipv6" "$v4" "$rdns"
+else
+  if $REVERSE; then
+    echo "$1,$v4,$(reverse_dns "$v4")"
+  else
+    echo "$1,$v4"
+  fi
+fi
+}
+
+########################################
+# Batch
+########################################
+
+run_batch() {
+INPUT="$INPUT_FILE"
+[[ "$INPUT_FILE" == "-" ]] && INPUT="/dev/stdin"
+[[ ! -f "$INPUT" && "$INPUT" != "/dev/stdin" ]] && exit 3
+
+while IFS= read -r line; do
+  [[ -z "$line" || "$line" =~ ^# ]] && continue
+  if validate_ipv4 "$line"; then
+    process_ipv4 "$line"
+  else
+    process_ipv6 "$line"
+  fi
+done < "$INPUT"
+}
+
+########################################
+# Argument Parsing
+########################################
+
+while [[ $# -gt 0 ]]; do
+case "$1" in
+  -4) MODE="4"; TARGET="$2"; shift 2 ;;
+  -6) MODE="6"; TARGET="$2"; shift 2 ;;
+  -b) MODE="b"; INPUT_FILE="$2"; shift 2 ;;
+  --prefix) PREFIX="$2"; shift 2 ;;
+  -o) OUTPUT_FILE="$2"; shift 2 ;;
+  -r) REVERSE=true; shift ;;
+  --json) JSON=true; shift ;;
+  -h) usage ;;
+  *) echo "Invalid argument: $1"; exit 2 ;;
+esac
+done
+
+[[ -n "$PREFIX" ]] && validate_prefix "$PREFIX" || true
+
+########################################
+# Execution
+########################################
+
+if [[ "$MODE" == "4" ]]; then
+  process_ipv4 "$TARGET"
+elif [[ "$MODE" == "6" ]]; then
+  process_ipv6 "$TARGET"
+elif [[ "$MODE" == "b" ]]; then
+  if $JSON; then
+    json_start_batch
+    run_batch
+    json_end_batch
+  else
+    if [[ -n "$OUTPUT_FILE" ]]; then
+      run_batch | tee "$OUTPUT_FILE"
+    else
+      run_batch
+    fi
+    echo "Success: $SUCCESS"
+    echo "Failed : $FAIL"
+  fi
+else
+  usage
+fi
+
+if [[ $SUCCESS -gt 0 && $FAIL -eq 0 ]]; then exit 0; fi
+if [[ $SUCCESS -gt 0 && $FAIL -gt 0 ]]; then exit 1; fi
+exit 4
